@@ -200,7 +200,7 @@ class RealMarketGodMode:
 
         # Importar módulos del sistema anterior
         try:
-            from test_performance import (
+            from god_mode_complete import (
                 TemporalModule, VisionModule, TabularModule, 
                 NLPModule, GraphModule, SACAgent, TimeGANSimulator
             )
