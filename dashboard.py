@@ -11,6 +11,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from watchlists import TOP_50_SYMBOLS_CSV
 
 st.set_page_config(page_title="God Mode Command Deck", page_icon="GM", layout="wide")
 
@@ -325,7 +326,7 @@ def main() -> None:
     if page == "Pipeline":
         i1, i2, i3 = st.columns(3)
         with i1:
-            symbols_raw = st.text_input("Symbols", "AAPL,MSFT,GOOGL,TSLA,NVDA")
+            symbols_raw = st.text_input("Symbols", TOP_50_SYMBOLS_CSV)
         with i2:
             execute = st.checkbox("Execute paper trades", value=False)
         with i3:

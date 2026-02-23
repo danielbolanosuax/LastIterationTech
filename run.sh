@@ -41,12 +41,12 @@ fi
 case $1 in
     1|pipeline)
         echo "🚀 Ejecutando pipeline principal..."
-        python main.py --symbols AAPL MSFT GOOGL TSLA NVDA
+        python main.py
         ;;
 
     2|loop)
         echo "🔄 Ejecutando modo 24/7 con supervisor..."
-        python run_24_7.py --symbols AAPL MSFT GOOGL TSLA NVDA --interval 3600 --retry-delay 60 --restart-delay 15
+        python run_24_7.py --interval 3600 --retry-delay 60 --restart-delay 15
         ;;
 
     3|quick|quickstart)

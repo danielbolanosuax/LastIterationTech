@@ -10,6 +10,7 @@ import time
 import json
 import os
 import sys
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -340,6 +341,289 @@ def get_price_column(df: pd.DataFrame) -> np.ndarray:
     raise ValueError("No se encontraron columnas de precio")
 
 # ============================================================================
+# MÃ“DULOS AI BASE (CONECTADOS)
+# ============================================================================
+
+class TemporalModule:
+    """SeÃ±al temporal ligera basada en drift/momentum de retornos."""
+
+    def __init__(self, horizon: int = 10):
+        self.horizon = horizon
+        self.is_mock = False
+
+    def predict(self, price_data: pd.DataFrame) -> ModelOutput:
+        price = pd.Series(get_price_column(price_data)).astype(float).dropna()
+        if len(price) < 5:
+            pred = np.zeros(self.horizon, dtype=float)
+            return ModelOutput(pred, 0.50, {'reason': 'insufficient_data'}, 'temporal')
+
+        returns = price.pct_change().dropna()
+        recent_ret = returns.tail(min(30, len(returns)))
+        ret_mu = float(recent_ret.mean()) if len(recent_ret) > 0 else 0.0
+        ret_sigma = float(recent_ret.std()) if len(recent_ret) > 0 else 0.01
+
+        k = min(40, len(price))
+        x = np.arange(k, dtype=float)
+        slope = float(np.polyfit(x, price.iloc[-k:].values, 1)[0] / (price.iloc[-1] + 1e-12))
+
+        lookback = min(15, len(price) - 1)
+        momentum = float((price.iloc[-1] / price.iloc[-1 - lookback]) - 1.0) if lookback > 0 else ret_mu
+        momentum_rate = momentum / max(lookback, 1)
+
+        drift = float(np.clip(0.45 * ret_mu + 0.35 * slope + 0.20 * momentum_rate, -0.03, 0.03))
+        forecast_returns = drift + np.linspace(0.0, drift * 0.5, self.horizon)
+        prediction = forecast_returns.astype(float)
+
+        conf = 0.55 + min(0.35, abs(drift) * 8.0 + max(0.0, 0.10 - ret_sigma) * 0.8)
+        confidence = float(np.clip(conf, 0.50, 0.95))
+
+        metadata = {
+            'drift': drift,
+            'ret_mu': ret_mu,
+            'ret_sigma': ret_sigma,
+            'momentum': momentum,
+        }
+        return ModelOutput(prediction, confidence, metadata, 'temporal')
+
+
+class VisionModule:
+    """DetecciÃ³n de patrones simple sobre la serie de precios."""
+
+    def __init__(self):
+        self.is_mock = False
+
+    def analyze(self, price_data: pd.DataFrame) -> ModelOutput:
+        price = pd.Series(get_price_column(price_data)).astype(float).dropna()
+        if len(price) < 25:
+            return ModelOutput(np.array([0.0]), 0.50, {'detected_patterns': ['insufficient_data']}, 'vision')
+
+        r = price.pct_change().fillna(0.0)
+        sma_fast = float(price.rolling(8).mean().iloc[-1])
+        sma_slow = float(price.rolling(21).mean().iloc[-1])
+        breakout_ref = float(price.tail(20).iloc[:-1].max()) if len(price) >= 21 else float(price.max())
+        breakout = float((price.iloc[-1] / (breakout_ref + 1e-12)) - 1.0)
+
+        up_streak = int((r.tail(5) > 0).sum())
+        down_streak = int((r.tail(5) < 0).sum())
+
+        score = 0.0
+        patterns = []
+
+        if sma_fast > sma_slow:
+            score += 1.0
+            patterns.append('sma_bull_cross')
+        else:
+            score -= 1.0
+            patterns.append('sma_bear_cross')
+
+        if breakout > 0.01:
+            score += 1.0
+            patterns.append('breakout_up')
+        elif breakout < -0.01:
+            score -= 1.0
+            patterns.append('breakout_down')
+
+        if up_streak >= 4:
+            score += 0.5
+            patterns.append('momentum_up')
+        if down_streak >= 4:
+            score -= 0.5
+            patterns.append('momentum_down')
+
+        norm_score = float(np.clip(score / 3.0, -1.0, 1.0))
+        conf = 0.55 + 0.35 * min(1.0, abs(norm_score))
+        confidence = float(np.clip(conf, 0.50, 0.95))
+
+        metadata = {
+            'detected_patterns': patterns if patterns else ['none'],
+            'pattern_score': norm_score,
+            'sma_fast': sma_fast,
+            'sma_slow': sma_slow,
+        }
+        return ModelOutput(np.array([norm_score]), confidence, metadata, 'vision')
+
+
+class TabularModule:
+    """Scoring tabular ligero sobre indicadores tÃ©cnicos."""
+
+    def __init__(self):
+        self.is_mock = False
+
+    def predict(self, features_df: pd.DataFrame) -> ModelOutput:
+        row = features_df.iloc[0] if not features_df.empty else pd.Series(dtype=float)
+        rsi = float(row.get('rsi', 50.0))
+        macd = float(row.get('macd', 0.0))
+        returns = float(row.get('returns', 0.0))
+        vol = float(row.get('volatility', 0.01))
+        bb_pos = float(row.get('bb_position', 0.5))
+
+        rsi_score = float(np.clip((50.0 - rsi) / 25.0, -1.0, 1.0))
+        macd_score = float(np.tanh(macd * 5.0))
+        ret_score = float(np.tanh(returns * 20.0))
+        bb_score = float(np.clip((0.5 - bb_pos) * 2.0, -1.0, 1.0))
+
+        raw = 0.30 * rsi_score + 0.30 * macd_score + 0.20 * ret_score + 0.20 * bb_score
+        raw = float(np.clip(raw, -1.0, 1.0))
+
+        conf = 0.55 + 0.30 * abs(raw) + 0.20 * max(0.0, 0.08 - vol)
+        confidence = float(np.clip(conf, 0.50, 0.95))
+
+        metadata = {
+            'feature_scores': {
+                'rsi': rsi_score,
+                'macd': macd_score,
+                'returns': ret_score,
+                'bb_position': bb_score,
+            },
+            'volatility': vol,
+            'raw_score': raw,
+        }
+        return ModelOutput(np.array([raw]), confidence, metadata, 'tabular')
+
+
+class NLPModule:
+    """Sentimiento basado en lÃ©xico financiero ligero."""
+
+    POSITIVE_WORDS = {
+        'beat', 'growth', 'strong', 'up', 'surge', 'bullish', 'optimistic',
+        'record', 'profit', 'expansion', 'upgrade', 'outperform', 'momentum'
+    }
+    NEGATIVE_WORDS = {
+        'miss', 'weak', 'down', 'drop', 'bearish', 'risk', 'uncertain',
+        'loss', 'downgrade', 'recession', 'volatility', 'lawsuit', 'decline'
+    }
+
+    def __init__(self):
+        self.is_mock = False
+
+    def analyze(self, news_items: List[str]) -> ModelOutput:
+        if not news_items:
+            return ModelOutput(np.array([0.0]), 0.50, {'coverage': 0.0}, 'nlp')
+
+        scores = []
+        covered = 0
+        for item in news_items:
+            tokens = re.findall(r"[a-zA-Z]+", str(item).lower())
+            pos = sum(1 for t in tokens if t in self.POSITIVE_WORDS)
+            neg = sum(1 for t in tokens if t in self.NEGATIVE_WORDS)
+            tot = pos + neg
+            if tot > 0:
+                covered += 1
+                scores.append((pos - neg) / tot)
+            else:
+                scores.append(0.0)
+
+        sentiment = float(np.mean(scores)) if scores else 0.0
+        coverage = covered / max(1, len(news_items))
+        conf = 0.50 + 0.25 * coverage + 0.20 * min(1.0, abs(sentiment))
+        confidence = float(np.clip(conf, 0.50, 0.95))
+
+        metadata = {
+            'coverage': coverage,
+            'num_news': len(news_items),
+        }
+        return ModelOutput(np.array([sentiment]), confidence, metadata, 'nlp')
+
+
+class GraphModule:
+    """SeÃ±al relacional ligera basada en estructura de red simulada."""
+
+    def __init__(self):
+        self.is_mock = False
+
+    def analyze(self, adjacency: np.ndarray, features: np.ndarray) -> ModelOutput:
+        adj = np.asarray(adjacency, dtype=float)
+        feat = np.asarray(features, dtype=float)
+        if adj.ndim != 2 or feat.ndim != 2:
+            return ModelOutput(np.zeros(10), 0.50, {'reason': 'invalid_input'}, 'graph')
+
+        degree = adj.mean(axis=1)
+        centrality = degree / (degree.sum() + 1e-12)
+        dispersion = float(np.std(centrality))
+        avg_degree = float(np.mean(degree))
+
+        emb = feat.mean(axis=0).astype(float)
+        if len(emb) < 10:
+            emb = np.pad(emb, (0, 10 - len(emb)))
+        else:
+            emb = emb[:10]
+
+        conf = 0.55 + 0.25 * max(0.0, 1.0 - min(1.0, dispersion * 8.0))
+        confidence = float(np.clip(conf, 0.50, 0.95))
+        metadata = {'avg_degree': avg_degree, 'dispersion': dispersion}
+        return ModelOutput(emb, confidence, metadata, 'graph')
+
+
+class SACAgent:
+    """Policy ligera para combinar seÃ±ales multimodales."""
+
+    def __init__(self, state_dim: int = 128, action_dim: int = 3):
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.is_mock = False
+
+    def _construct_state_vector(self, state: MarketState) -> np.ndarray:
+        vec = np.concatenate([
+            np.asarray(state.price_features).flatten(),
+            np.asarray(state.technical_indicators).flatten(),
+            np.asarray([state.sentiment_score, state.volatility]),
+            np.asarray(state.graph_embeddings).flatten(),
+            np.asarray(state.time_features).flatten(),
+        ])
+        if len(vec) < self.state_dim:
+            vec = np.pad(vec, (0, self.state_dim - len(vec)))
+        elif len(vec) > self.state_dim:
+            vec = vec[:self.state_dim]
+        return vec.astype(float)
+
+    def get_trading_decision(self, state: MarketState) -> Dict[str, float]:
+        price_signal = float(np.tanh(np.mean(state.price_features) * 20.0))
+        tech_signal = float(np.tanh(np.mean(state.technical_indicators)))
+        sentiment_signal = float(np.clip(state.sentiment_score, -1.0, 1.0))
+        graph_signal = float(np.tanh(np.mean(state.graph_embeddings)))
+        vol = float(np.clip(state.volatility, 0.001, 1.0))
+
+        combined = (
+            0.38 * price_signal
+            + 0.27 * tech_signal
+            + 0.20 * sentiment_signal
+            + 0.15 * graph_signal
+        )
+
+        if combined > 0.15:
+            action = 'BUY'
+        elif combined < -0.15:
+            action = 'SELL'
+        else:
+            action = 'HOLD'
+
+        confidence = float(np.clip(0.58 + 0.35 * abs(combined) - 0.10 * vol, 0.50, 0.95))
+        position_size = float(np.clip(0.03 + 0.17 * abs(combined), 0.01, Config.MAX_POSITION_SIZE))
+        stop_loss = -float(np.clip(0.01 + vol * 0.04, 0.01, 0.08))
+        take_profit = float(np.clip(abs(stop_loss) * 2.2, 0.02, 0.18))
+
+        return {
+            'action': action,
+            'position_size': position_size,
+            'confidence': confidence,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'policy_score': combined,
+        }
+
+
+class TimeGANSimulator:
+    """Simulador de escenarios (proxy liviano de TimeGAN)."""
+
+    def __init__(self):
+        self.is_mock = False
+
+    def generate_scenarios(self, n_scenarios: int = 10, horizon: int = 10) -> np.ndarray:
+        drift = 0.0002
+        vol = 0.01
+        return np.random.normal(drift, vol, size=(n_scenarios, horizon))
+
+# ============================================================================
 # POSITION SIZER - Kelly Criterion
 # ============================================================================
 
@@ -592,11 +876,6 @@ class GodModeComplete:
 
         # Importar módulos
         try:
-            from god_mode_complete import (
-                TemporalModule, VisionModule, TabularModule,
-                NLPModule, GraphModule, SACAgent, TimeGANSimulator
-            )
-
             self.temporal_module = TemporalModule()
             self.vision_module = VisionModule()
             self.tabular_module = TabularModule()
@@ -605,10 +884,14 @@ class GodModeComplete:
             self.sac_agent = SACAgent(state_dim=128, action_dim=3)
             self.timegan = TimeGANSimulator()
 
-            print("  ✓ Módulos AI cargados")
-        except ImportError:
-            print("  ⚠ Usando módulos simulados")
+            print("  ✓ Módulos AI conectados")
+        except Exception as e:
+            print(f"  ⚠ Fallback a módulos simulados: {str(e)[:80]}")
             self._init_mock_modules()
+
+        self.model_status = self._collect_model_status()
+        status_line = ", ".join(f"{k}:{v}" for k, v in self.model_status.items())
+        print(f"  ✓ Estado de conectividad -> {status_line}")
 
         # Historial de señales
         self.signals_history = []
@@ -623,6 +906,7 @@ class GodModeComplete:
     def _init_mock_modules(self):
         """Módulos mock para testing"""
         class MockModule:
+            is_mock = True
             def predict(self, data):
                 return ModelOutput(np.random.randn(10), 0.75, {}, 'mock')
             def analyze(self, *args, **kwargs):
@@ -631,6 +915,7 @@ class GodModeComplete:
                 return np.random.randn(10, 20)
 
         class MockSAC:
+            is_mock = True
             def _construct_state_vector(self, state):
                 return np.random.randn(128)
             def get_trading_decision(self, state):
@@ -643,6 +928,7 @@ class GodModeComplete:
                 }
 
         class MockTimeGAN:
+            is_mock = True
             def generate_scenarios(self, n_scenarios=10, horizon=10):
                 return np.random.randn(n_scenarios, horizon)
 
@@ -653,6 +939,28 @@ class GodModeComplete:
         self.graph_module = MockModule()
         self.sac_agent = MockSAC()
         self.timegan = MockTimeGAN()
+
+    def _collect_model_status(self) -> Dict[str, str]:
+        """Estado de conectividad de todos los módulos para decisiones."""
+        modules = {
+            'temporal': self.temporal_module,
+            'vision': self.vision_module,
+            'tabular': self.tabular_module,
+            'nlp': self.nlp_module,
+            'graph': self.graph_module,
+            'sac': self.sac_agent,
+            'timegan': self.timegan,
+            'options': self.options_analyzer,
+        }
+        out = {}
+        for name, obj in modules.items():
+            if obj is None:
+                out[name] = 'DISCONNECTED'
+            elif getattr(obj, 'is_mock', False):
+                out[name] = 'MOCK'
+            else:
+                out[name] = 'CONNECTED'
+        return out
 
     def _estimate_annualized_volatility(self, price_data: pd.DataFrame) -> float:
         """Estimacion robusta de volatilidad anualizada."""
@@ -746,6 +1054,8 @@ class GodModeComplete:
             print(f"   Avg IV: {options_analysis.get('avg_implied_volatility', 0.0):.1%}")
             print(f"   Options confidence: {options_confidence:.1%}")
 
+        self.model_status = self._collect_model_status()
+
         # Crear señal de trading
         decision = result['decision']
         confidence = result['confidence_breakdown']['overall']
@@ -807,7 +1117,8 @@ class GodModeComplete:
             'price_change': float(price_change),
             'signal': signal,
             'risk_check': {'passed': risk_ok, 'message': risk_msg},
-            'quote': quote
+            'quote': quote,
+            'model_status': self.model_status.copy(),
         })
 
         return result
@@ -949,10 +1260,44 @@ class GodModeComplete:
 
     def _prepare_graph_data(self, market_data: Dict) -> Dict:
         n_assets = 10
-        adjacency = np.random.rand(n_assets, n_assets)
-        adjacency = (adjacency + adjacency.T) / 2
+        price_df = market_data.get('price_data', pd.DataFrame())
+        try:
+            close = pd.Series(get_price_column(price_df)).astype(float).dropna()
+            ret = close.pct_change().fillna(0.0).tail(240).values
+        except Exception:
+            ret = np.random.normal(0.0, 0.01, size=240)
+
+        if len(ret) < 40:
+            ret = np.pad(ret, (40 - len(ret), 0))
+
+        feature_rows = []
+        for i in range(n_assets):
+            shifted = np.roll(ret, i + 1)
+            w_short = shifted[-20:]
+            w_mid = shifted[-60:]
+            w_long = shifted[-120:]
+            feat = np.array([
+                np.mean(w_short), np.std(w_short),
+                np.mean(w_mid), np.std(w_mid),
+                np.mean(w_long), np.std(w_long),
+                np.percentile(w_short, 25), np.percentile(w_short, 75),
+                np.percentile(w_mid, 25), np.percentile(w_mid, 75),
+                np.min(w_short), np.max(w_short),
+                np.min(w_mid), np.max(w_mid),
+                np.mean(np.abs(w_short)), np.mean(np.abs(w_mid)),
+                np.mean(np.sign(w_short)), np.mean(np.sign(w_mid)),
+                np.mean(shifted[-5:]), np.mean(shifted[-10:]),
+            ], dtype=float)
+            feature_rows.append(feat)
+
+        features = np.vstack(feature_rows)
+
+        # Adyacencia basada en similitud coseno entre nodos.
+        norm = np.linalg.norm(features, axis=1, keepdims=True) + 1e-12
+        f_norm = features / norm
+        adjacency = np.clip(f_norm @ f_norm.T, -1.0, 1.0)
+        adjacency = (adjacency + 1.0) / 2.0
         np.fill_diagonal(adjacency, 1.0)
-        features = np.random.randn(n_assets, 20)
         return {'adjacency': adjacency, 'features': features}
 
     def _construct_market_state(self, temporal, vision, tabular, nlp, graph) -> MarketState:
@@ -960,9 +1305,13 @@ class GodModeComplete:
         if len(price_features) < 10:
             price_features = np.pad(price_features, (0, 10 - len(price_features)))
 
-        technical = np.array([tabular.confidence, temporal.confidence, vision.confidence])
+        tab_pred = float(tabular.prediction[0]) if len(tabular.prediction) > 0 else 0.0
+        temp_pred = float(np.mean(temporal.prediction[-3:])) if len(temporal.prediction) > 0 else 0.0
+        vis_pred = float(np.mean(vision.prediction)) if len(vision.prediction) > 0 else 0.0
+        technical = np.array([tab_pred, temp_pred, vis_pred], dtype=float)
         sentiment = float(nlp.prediction[0])
-        volatility = float(np.std(temporal.prediction)) if len(temporal.prediction) > 1 else 0.02
+        base_vol = float(tabular.metadata.get('volatility', np.std(temporal.prediction)))
+        volatility = float(np.clip(abs(base_vol), 0.005, 0.20))
 
         graph_emb = graph.prediction.flatten()[:10]
         if len(graph_emb) < 10:

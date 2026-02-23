@@ -10,6 +10,7 @@ import sys
 import time
 from datetime import datetime
 from typing import List
+from watchlists import TOP_50_SYMBOLS
 
 
 def configure_console_output():
@@ -47,7 +48,7 @@ def main():
     configure_console_output()
 
     parser = argparse.ArgumentParser(description="Supervisor 24/7 para main.py")
-    parser.add_argument("--symbols", nargs="+", default=["AAPL", "MSFT", "GOOGL", "TSLA", "NVDA"])
+    parser.add_argument("--symbols", nargs="+", default=TOP_50_SYMBOLS)
     parser.add_argument("--interval", type=int, default=3600)
     parser.add_argument("--retry-delay", type=int, default=60)
     parser.add_argument("--restart-delay", type=int, default=15)

@@ -8,8 +8,13 @@ import os
 import sys
 import time
 import argparse
+import socket
+import subprocess
+import webbrowser
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List
+from watchlists import TOP_50_SYMBOLS
 
 # Añadir directorio actual al path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -89,6 +94,102 @@ def load_system():
     except Exception as e:
         print(f"  ❌ Error: {str(e)}")
         return None
+
+
+def _is_port_open(port: int, host: str = "127.0.0.1") -> bool:
+    """True si hay un proceso escuchando en host:port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.2)
+        return sock.connect_ex((host, port)) == 0
+
+
+def _find_available_port(start_port: int = 8511, max_tries: int = 20) -> int:
+    """Buscar un puerto disponible para la app de monitoreo."""
+    for offset in range(max_tries):
+        candidate = start_port + offset
+        if not _is_port_open(candidate):
+            return candidate
+    return start_port
+
+
+def launch_monitor_app(app_filename: str = "app.py", start_port: int = 8511):
+    """Lanzar la interfaz de monitoreo en proceso separado."""
+    base_dir = Path(__file__).resolve().parent
+    app_path = base_dir / app_filename
+
+    if not app_path.exists():
+        fallback = base_dir / "vsc_app.py"
+        if fallback.exists():
+            app_path = fallback
+        else:
+            print(f"\n⚠ App de monitoreo no encontrada: {app_path}")
+            return None
+
+    logs_dir = base_dir / "logs"
+    logs_dir.mkdir(exist_ok=True)
+
+    port = _find_available_port(start_port=start_port)
+    url = f"http://127.0.0.1:{port}"
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = logs_dir / f"monitor_app_{timestamp}.log"
+
+    cmd = [
+        f'"{sys.executable}"',
+        "-m",
+        "streamlit",
+        "run",
+        f'"{app_path}"',
+        "--server.address",
+        "127.0.0.1",
+        "--server.port",
+        str(port),
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false",
+    ]
+
+    pid = None
+    try:
+        if os.name == "nt":
+            # Usar "start" para desacoplar la app en otra consola de Windows.
+            start_cmd = (
+                f'start "" {" ".join(cmd)} > "{log_path}" 2>&1'
+            )
+            subprocess.Popen(start_cmd, cwd=str(base_dir), shell=True)
+        else:
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log_file:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "streamlit", "run", str(app_path),
+                     "--server.address", "127.0.0.1",
+                     "--server.port", str(port),
+                     "--server.headless", "true",
+                     "--browser.gatherUsageStats", "false"],
+                    cwd=str(base_dir),
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            pid = proc.pid
+    except Exception as e:
+        print(f"\n⚠ No se pudo lanzar app de monitoreo: {str(e)}")
+        return None
+
+    # Abrir navegador con la URL del monitor (best effort).
+    try:
+        time.sleep(1.0)
+        webbrowser.open(url, new=2)
+    except Exception:
+        pass
+
+    print("\n[MONITOR] Interfaz lanzada:")
+    print(f"  URL: {url}")
+    print(f"  Log: {log_path}")
+    if pid:
+        print(f"  PID: {pid}")
+    return {"url": url, "log_path": str(log_path), "pid": pid}
+
 
 def analyze_watchlist(god_mode, symbols: List[str], execute_trades: bool = False):
     """Analizar lista de símbolos"""
@@ -248,6 +349,10 @@ def save_report_to_file(results: List[dict], portfolio: dict):
                     'options': float(r.get('result', {}).get('confidence_breakdown', {}).get('options', 0.0)),
                     'overall': float(r.get('result', {}).get('confidence_breakdown', {}).get('overall', r.get('confidence', 0.0)))
                 },
+                'model_status': {
+                    str(k): str(v)
+                    for k, v in (r.get('result', {}).get('model_status', {}) or {}).items()
+                },
                 'options_analysis': {
                     'available': bool(r.get('options_analysis', {}).get('available', False)),
                     'directional_bias': r.get('options_analysis', {}).get('directional_bias', 'NEUTRAL'),
@@ -300,7 +405,7 @@ def main():
     parser.add_argument(
         '--symbols',
         nargs='+',
-        default=['AAPL', 'MSFT', 'GOOGL', 'TSLA', 'NVDA'],
+        default=TOP_50_SYMBOLS,
         help='Símbolos a analizar'
     )
 
@@ -337,6 +442,12 @@ def main():
         help='Segundos de espera antes de reintentar tras un error en modo loop'
     )
 
+    parser.add_argument(
+        '--no-monitor-app',
+        action='store_true',
+        help='No lanzar vsc_app.py al iniciar el pipeline'
+    )
+
     args = parser.parse_args()
 
     if args.interval <= 0:
@@ -360,6 +471,12 @@ def main():
     if god_mode is None:
         print("\n❌ Error cargando el sistema. Abortando...")
         sys.exit(1)
+
+    # Lanzar app de monitoreo (separada) salvo que se desactive por CLI.
+    if args.no_monitor_app:
+        print("\n[MONITOR] App desactivada por --no-monitor-app")
+    else:
+        launch_monitor_app()
 
     # Función para ejecutar un ciclo completo
     def run_cycle():
