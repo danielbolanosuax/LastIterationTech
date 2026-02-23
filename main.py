@@ -50,7 +50,7 @@ def check_dependencies():
     """Verificar dependencias instaladas"""
     print("\n[STEP 1] Verificando dependencias...\n")
 
-    required = ['numpy', 'pandas', 'requests', 'torch', 'streamlit']
+    required = ['numpy', 'pandas', 'requests', 'scipy', 'torch', 'streamlit']
     missing = []
 
     for module in required:
@@ -110,6 +110,7 @@ def analyze_watchlist(god_mode, symbols: List[str], execute_trades: bool = False
 
             signal = result['signal']
             confidence = result['confidence_breakdown']['overall']
+            options_analysis = result.get('options_analysis', {})
 
             # Emoji según acción
             action_emoji = get_action_emoji(signal.action)
@@ -117,6 +118,13 @@ def analyze_watchlist(god_mode, symbols: List[str], execute_trades: bool = False
             print(f"       {action_emoji} {signal.action} @ ${result['current_price']:.2f}")
             print(f"       Confianza: {confidence:.1%}")
             print(f"       Position: {signal.position_size:.4f} (${signal.position_size * signal.price:,.2f})")
+            if options_analysis.get('available'):
+                print(
+                    "       Options: "
+                    f"{options_analysis.get('directional_bias', 'NEUTRAL')} | "
+                    f"IV={options_analysis.get('avg_implied_volatility', 0.0):.1%} | "
+                    f"Rec={options_analysis.get('recommendation', 'N/A')}"
+                )
 
             results.append({
                 'symbol': symbol,
@@ -124,7 +132,8 @@ def analyze_watchlist(god_mode, symbols: List[str], execute_trades: bool = False
                 'price': result['current_price'],
                 'confidence': confidence,
                 'signal': signal,
-                'result': result
+                'result': result,
+                'options_analysis': options_analysis
             })
 
             # Rate limiting
@@ -180,6 +189,18 @@ def generate_report(results: List[dict], god_mode):
     for i, r in enumerate(sorted_results[:3], 1):
         print(f"  {i}. {r['symbol']}: {r['action']} (Confianza: {r['confidence']:.1%})")
 
+    # Top oportunidades en opciones
+    options_ready = [r for r in results if r.get('options_analysis', {}).get('available')]
+    if options_ready:
+        print("\n🧮 RESUMEN BLACK-SCHOLES:")
+        for r in options_ready[:3]:
+            options = r['options_analysis']
+            print(
+                f"  {r['symbol']}: {options.get('directional_bias', 'NEUTRAL')} | "
+                f"Rec={options.get('recommendation', 'N/A')} | "
+                f"IV={options.get('avg_implied_volatility', 0.0):.1%}"
+            )
+
     # Portfolio status
     print("\n💼 ESTADO DEL PORTFOLIO:")
     portfolio = god_mode.get_portfolio_report()
@@ -209,7 +230,14 @@ def save_report_to_file(results: List[dict], portfolio: dict):
                 'confidence': float(r['confidence']),
                 'position_size': float(r['signal'].position_size),
                 'stop_loss': float(r['signal'].stop_loss),
-                'take_profit': float(r['signal'].take_profit)
+                'take_profit': float(r['signal'].take_profit),
+                'options_analysis': {
+                    'available': bool(r.get('options_analysis', {}).get('available', False)),
+                    'directional_bias': r.get('options_analysis', {}).get('directional_bias', 'NEUTRAL'),
+                    'recommendation': r.get('options_analysis', {}).get('recommendation', 'NO_DATA'),
+                    'signal_confidence': float(r.get('options_analysis', {}).get('signal_confidence', 0.0)),
+                    'avg_implied_volatility': float(r.get('options_analysis', {}).get('avg_implied_volatility', 0.0))
+                }
             }
             for r in results
         ],

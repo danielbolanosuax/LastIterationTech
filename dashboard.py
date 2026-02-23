@@ -186,20 +186,43 @@ elif page == "🔍 Análisis":
                 st.subheader("📊 Confianza por Módulo")
 
                 confidence = result['confidence_breakdown']
+                conf_modules = ['Temporal', 'Visión', 'Tabular', 'NLP', 'Grafos']
+                conf_values = [
+                    confidence['temporal'],
+                    confidence['vision'],
+                    confidence['tabular'],
+                    confidence['nlp'],
+                    confidence['graph']
+                ]
+                if 'options' in confidence:
+                    conf_modules.append('Opciones')
+                    conf_values.append(confidence['options'])
+
                 conf_df = pd.DataFrame({
-                    'Módulo': ['Temporal', 'Visión', 'Tabular', 'NLP', 'Grafos'],
-                    'Confianza': [
-                        confidence['temporal'],
-                        confidence['vision'],
-                        confidence['tabular'],
-                        confidence['nlp'],
-                        confidence['graph']
-                    ]
+                    'Módulo': conf_modules,
+                    'Confianza': conf_values
                 })
 
                 fig = px.bar(conf_df, x='Módulo', y='Confianza', 
                             title=f"Confianza General: {confidence['overall']:.1%}")
                 st.plotly_chart(fig, use_container_width=True)
+
+                # Black-Scholes options overlay
+                options_analysis = result.get('options_analysis', {})
+                if options_analysis.get('available'):
+                    st.markdown("---")
+                    st.subheader("🧮 Black-Scholes (Opciones)")
+
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Bias", options_analysis.get('directional_bias', 'NEUTRAL'))
+                    col2.metric("Recomendación", options_analysis.get('recommendation', 'N/A'))
+                    col3.metric("Options Confidence", f"{options_analysis.get('signal_confidence', 0.0):.1%}")
+                    col4.metric("Avg IV", f"{options_analysis.get('avg_implied_volatility', 0.0):.1%}")
+
+                    top_ops = options_analysis.get('top_opportunities', [])
+                    if top_ops:
+                        st.markdown("**Top Opportunities**")
+                        st.dataframe(pd.DataFrame(top_ops), use_container_width=True)
 
                 # Trade execution result
                 if 'trade_result' in result:

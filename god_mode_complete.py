@@ -13,6 +13,11 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+try:
+    from black_scholes_engine import OptionsAnalyzer
+except Exception:
+    OptionsAnalyzer = None
+
 
 def configure_console_output():
     """Evitar errores de encoding al imprimir unicode en Windows."""
@@ -583,6 +588,7 @@ class GodModeComplete:
         self.position_sizer = PositionSizer()
         self.risk_manager = RiskManager()
         self.paper_trading = PaperTradingEngine()
+        self.options_analyzer = OptionsAnalyzer() if OptionsAnalyzer else None
 
         # Importar módulos
         try:
@@ -606,6 +612,11 @@ class GodModeComplete:
 
         # Historial de señales
         self.signals_history = []
+
+        if self.options_analyzer is not None:
+            print("  ✓ Black-Scholes engine cargado")
+        else:
+            print("  ⚠ Black-Scholes engine no disponible")
 
         print("  ✓ Sistema listo\n")
 
@@ -643,6 +654,55 @@ class GodModeComplete:
         self.sac_agent = MockSAC()
         self.timegan = MockTimeGAN()
 
+    def _estimate_annualized_volatility(self, price_data: pd.DataFrame) -> float:
+        """Estimacion robusta de volatilidad anualizada."""
+        try:
+            close_prices = pd.Series(get_price_column(price_data)).astype(float)
+            returns = close_prices.pct_change().dropna()
+            if returns.empty:
+                return 0.20
+            annual_vol = float(returns.std() * np.sqrt(252))
+            return float(np.clip(annual_vol, 0.05, 2.0))
+        except Exception:
+            return 0.20
+
+    @staticmethod
+    def _blend_confidence(base_confidence: float, options_confidence: float) -> float:
+        blended = np.mean([base_confidence, options_confidence])
+        return float(np.clip(blended, 0.0, 0.99))
+
+    def _analyze_options_overlay(self, symbol: str, spot_price: float, price_data: pd.DataFrame) -> Dict[str, Any]:
+        """Ejecutar analisis de opciones Black-Scholes para enriquecer la señal."""
+        if self.options_analyzer is None:
+            return {
+                'available': False,
+                'directional_bias': 'NEUTRAL',
+                'recommendation': 'NO_DATA',
+                'signal_confidence': 0.5,
+                'avg_implied_volatility': 0.0
+            }
+
+        try:
+            annual_volatility = self._estimate_annualized_volatility(price_data)
+            option_chain = self.options_analyzer.analyze_symbol_options(
+                symbol=symbol,
+                spot_price=float(spot_price),
+                annualized_volatility=annual_volatility,
+                days_to_expiry=30
+            )
+            summary = self.options_analyzer.summarize_option_chain(option_chain)
+            summary['annualized_volatility_input'] = annual_volatility
+            return summary
+        except Exception as e:
+            return {
+                'available': False,
+                'directional_bias': 'NEUTRAL',
+                'recommendation': 'ERROR',
+                'signal_confidence': 0.5,
+                'avg_implied_volatility': 0.0,
+                'error': str(e)[:120]
+            }
+
     def analyze_symbol(self, symbol: str, period: str = "3mo", execute_trade: bool = False) -> Dict:
         """Análisis completo con opción de ejecutar trade"""
 
@@ -669,6 +729,23 @@ class GodModeComplete:
         market_data = {'price_data': price_data, 'news': news_data}
         result = self._analyze_and_decide(market_data)
 
+        # Overlay de opciones con Black-Scholes
+        options_analysis = self._analyze_options_overlay(symbol.upper(), latest_price, price_data)
+        result['options_analysis'] = options_analysis
+
+        if options_analysis.get('available'):
+            base_confidence = float(result['confidence_breakdown']['overall'])
+            options_confidence = float(options_analysis.get('signal_confidence', 0.5))
+            result['confidence_breakdown']['base_model'] = base_confidence
+            result['confidence_breakdown']['options'] = options_confidence
+            result['confidence_breakdown']['overall'] = self._blend_confidence(base_confidence, options_confidence)
+
+            print("\n[OPTIONS] BLACK-SCHOLES:")
+            print(f"   Bias: {options_analysis.get('directional_bias', 'NEUTRAL')}")
+            print(f"   Recommendation: {options_analysis.get('recommendation', 'N/A')}")
+            print(f"   Avg IV: {options_analysis.get('avg_implied_volatility', 0.0):.1%}")
+            print(f"   Options confidence: {options_confidence:.1%}")
+
         # Crear señal de trading
         decision = result['decision']
         confidence = result['confidence_breakdown']['overall']
@@ -688,7 +765,11 @@ class GodModeComplete:
             stop_loss=decision['stop_loss'],
             take_profit=decision['take_profit'],
             timestamp=datetime.now(),
-            reasoning=f"Confianza: {confidence:.1%}, Vol: {volatility:.2%}, Sentiment: {result['sentiment']:.2f}"
+            reasoning=(
+                f"Confianza: {confidence:.1%}, Vol: {volatility:.2%}, "
+                f"Sentiment: {result['sentiment']:.2f}, "
+                f"OptionsBias: {options_analysis.get('directional_bias', 'NEUTRAL')}"
+            )
         )
 
         # Verificar riesgo
