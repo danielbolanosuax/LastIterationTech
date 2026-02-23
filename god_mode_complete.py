@@ -19,6 +19,11 @@ try:
 except Exception:
     OptionsAnalyzer = None
 
+try:
+    from advanced_indicators import AdvancedIndicatorEngine
+except Exception:
+    AdvancedIndicatorEngine = None
+
 
 def configure_console_output():
     """Evitar errores de encoding al imprimir unicode en Windows."""
@@ -462,10 +467,36 @@ class TabularModule:
         ret_score = float(np.tanh(returns * 20.0))
         bb_score = float(np.clip((0.5 - bb_pos) * 2.0, -1.0, 1.0))
 
-        raw = 0.30 * rsi_score + 0.30 * macd_score + 0.20 * ret_score + 0.20 * bb_score
+        base_raw = 0.30 * rsi_score + 0.30 * macd_score + 0.20 * ret_score + 0.20 * bb_score
+        base_raw = float(np.clip(base_raw, -1.0, 1.0))
+
+        adv_comp = float(row.get('composite_score', 0.0))
+        adv_conf = float(np.clip(row.get('indicator_confidence', 0.0), 0.0, 1.0))
+        adv_final = str(row.get('final_signal', 'NEUTRAL')).upper()
+        adv_available = bool(row.get('advanced_available', False))
+
+        adv_map = {
+            'STRONG_BUY': 1.0,
+            'BUY': 0.5,
+            'NEUTRAL': 0.0,
+            'SELL': -0.5,
+            'STRONG_SELL': -1.0,
+        }
+        adv_signal_score = float(adv_map.get(adv_final, 0.0))
+
+        if adv_available:
+            raw = (
+                0.42 * base_raw
+                + 0.42 * adv_comp
+                + 0.16 * (adv_signal_score * max(0.25, adv_conf))
+            )
+        else:
+            raw = base_raw
         raw = float(np.clip(raw, -1.0, 1.0))
 
         conf = 0.55 + 0.30 * abs(raw) + 0.20 * max(0.0, 0.08 - vol)
+        if adv_available:
+            conf += 0.08 * adv_conf
         confidence = float(np.clip(conf, 0.50, 0.95))
 
         metadata = {
@@ -476,7 +507,15 @@ class TabularModule:
                 'bb_position': bb_score,
             },
             'volatility': vol,
+            'base_raw_score': base_raw,
             'raw_score': raw,
+            'advanced': {
+                'available': adv_available,
+                'composite_score': adv_comp,
+                'final_signal': adv_final,
+                'indicator_confidence': adv_conf,
+                'signal_score': adv_signal_score,
+            },
         }
         return ModelOutput(np.array([raw]), confidence, metadata, 'tabular')
 
@@ -873,6 +912,16 @@ class GodModeComplete:
         self.risk_manager = RiskManager()
         self.paper_trading = PaperTradingEngine()
         self.options_analyzer = OptionsAnalyzer() if OptionsAnalyzer else None
+        self.advanced_indicator_engine = None
+
+        if AdvancedIndicatorEngine is not None:
+            try:
+                self.advanced_indicator_engine = AdvancedIndicatorEngine()
+                print("  ✓ AdvancedIndicatorEngine conectado")
+            except Exception as e:
+                print(f"  ⚠ AdvancedIndicatorEngine no disponible: {str(e)[:80]}")
+        else:
+            print("  ⚠ AdvancedIndicatorEngine no importable")
 
         # Importar módulos
         try:
@@ -951,6 +1000,7 @@ class GodModeComplete:
             'sac': self.sac_agent,
             'timegan': self.timegan,
             'options': self.options_analyzer,
+            'advanced_indicators': self.advanced_indicator_engine,
         }
         out = {}
         for name, obj in modules.items():
@@ -1066,6 +1116,9 @@ class GodModeComplete:
             confidence, volatility, self.risk_manager.capital
         )
 
+        adv_sig = result.get('advanced_signals', {}) or {}
+        adv_text = f"{adv_sig.get('final_signal', 'NEUTRAL')} ({adv_sig.get('composite_score', 0.0):+.2f})"
+
         signal = TradeSignal(
             symbol=symbol.upper(),
             action=decision['action'],
@@ -1078,6 +1131,7 @@ class GodModeComplete:
             reasoning=(
                 f"Confianza: {confidence:.1%}, Vol: {volatility:.2%}, "
                 f"Sentiment: {result['sentiment']:.2f}, "
+                f"Adv: {adv_text}, "
                 f"OptionsBias: {options_analysis.get('directional_bias', 'NEUTRAL')}"
             )
         )
@@ -1147,7 +1201,22 @@ class GodModeComplete:
         print("\n[3/7] Módulo Tabular...")
         tabular_features = self._prepare_tabular_features(market_data)
         tabular_output = self.tabular_module.predict(tabular_features)
+        advanced_bundle = (
+            tabular_features['advanced_signal_bundle'].iloc[0]
+            if 'advanced_signal_bundle' in tabular_features.columns
+            else {}
+        )
+        advanced_summary = self._summarize_advanced_bundle(advanced_bundle if isinstance(advanced_bundle, dict) else {})
         print(f"  ✓ Features: RSI={tabular_features['rsi'].iloc[0]:.1f}, Vol={tabular_features['volatility'].iloc[0]:.2%}")
+        if advanced_summary:
+            print(
+                "  ✓ Advanced: "
+                f"{advanced_summary.get('final_signal', 'NEUTRAL')} "
+                f"(score={advanced_summary.get('composite_score', 0.0):+.2f}, "
+                f"conf={advanced_summary.get('confidence', 0.0):.1%})"
+            )
+        else:
+            print("  ⚠ Advanced: no disponible (se usa fallback tecnico basico)")
         print(f"  ✓ Confianza: {tabular_output.confidence:.2%}")
 
         # 4. NLP
@@ -1167,7 +1236,7 @@ class GodModeComplete:
         # 6. Market State
         print("\n[6/7] Market State...")
         market_state = self._construct_market_state(
-            temporal_output, vision_output, tabular_output, nlp_output, graph_output
+            temporal_output, vision_output, tabular_output, nlp_output, graph_output, advanced_summary
         )
         print(f"  ✓ State vector construido")
 
@@ -1183,6 +1252,10 @@ class GodModeComplete:
             temporal_output.confidence, vision_output.confidence,
             tabular_output.confidence, nlp_output.confidence, graph_output.confidence
         ])
+        if advanced_summary:
+            confidence_overall = float(np.clip(np.mean([
+                confidence_overall, advanced_summary.get('confidence', 0.0)
+            ]), 0.0, 0.99))
 
         print(f"\n{'='*80}")
         print(f"CONFIANZA GENERAL: {confidence_overall:.1%}")
@@ -1205,58 +1278,160 @@ class GodModeComplete:
                 'tabular': tabular_output.confidence,
                 'nlp': nlp_output.confidence,
                 'graph': graph_output.confidence,
+                'advanced': float(advanced_summary.get('confidence', 0.0)) if advanced_summary else 0.0,
                 'overall': confidence_overall
             },
-            'sentiment': float(sentiment)
+            'sentiment': float(sentiment),
+            'advanced_signals': advanced_summary,
         }
 
     def _prepare_tabular_features(self, market_data: Dict) -> pd.DataFrame:
-        """Features técnicos avanzados"""
+        """Features tecnicos base + bundle avanzado para decision integrada."""
         df = market_data['price_data'].copy()
         price_col = get_price_column(df)
 
         features = {
-            'returns': 0.0, 'volatility': 0.01,
-            'sma_20': price_col[-1], 'sma_50': price_col[-1],
-            'rsi': 50.0, 'macd': 0.0, 'bb_position': 0.5
+            'returns': 0.0,
+            'volatility': 0.01,
+            'sma_20': price_col[-1],
+            'sma_50': price_col[-1],
+            'rsi': 50.0,
+            'macd': 0.0,
+            'bb_position': 0.5,
+            'advanced_available': False,
+            'composite_score': 0.0,
+            'indicator_confidence': 0.0,
+            'final_signal': 'NEUTRAL',
+            'advanced_signal_bundle': {},
         }
 
         if len(price_col) > 1:
             returns = pd.Series(price_col).pct_change().dropna()
-            features['returns'] = returns.iloc[-1] if len(returns) > 0 else 0.0
-            features['volatility'] = returns.std() if len(returns) > 0 else 0.01
+            features['returns'] = float(returns.iloc[-1]) if len(returns) > 0 else 0.0
+            features['volatility'] = float(returns.std()) if len(returns) > 0 else 0.01
 
         if len(price_col) >= 20:
             sma20 = pd.Series(price_col).rolling(20).mean()
-            features['sma_20'] = sma20.iloc[-1]
+            features['sma_20'] = float(sma20.iloc[-1])
 
             # Bollinger Bands
             bb_std = pd.Series(price_col).rolling(20).std()
             bb_upper = sma20 + 2 * bb_std
             bb_lower = sma20 - 2 * bb_std
-            bb_position = (price_col[-1] - bb_lower.iloc[-1]) / (bb_upper.iloc[-1] - bb_lower.iloc[-1])
-            features['bb_position'] = bb_position
+            denom = float(bb_upper.iloc[-1] - bb_lower.iloc[-1])
+            if abs(denom) > 1e-12:
+                bb_position = (float(price_col[-1]) - float(bb_lower.iloc[-1])) / denom
+                features['bb_position'] = float(np.clip(bb_position, 0.0, 1.0))
 
         if len(price_col) >= 50:
-            features['sma_50'] = pd.Series(price_col).rolling(50).mean().iloc[-1]
+            features['sma_50'] = float(pd.Series(price_col).rolling(50).mean().iloc[-1])
 
-        # RSI
+        # RSI basico (fallback)
         if len(price_col) >= 14:
             delta = pd.Series(price_col).diff()
             gain = (delta.where(delta > 0, 0)).rolling(14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
             rs = gain / (loss + 1e-10)
             rsi = 100 - (100 / (1 + rs))
-            features['rsi'] = rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50.0
+            features['rsi'] = float(rsi.iloc[-1]) if not pd.isna(rsi.iloc[-1]) else 50.0
 
-        # MACD
+        # MACD basico (fallback)
         if len(price_col) >= 26:
             ema12 = pd.Series(price_col).ewm(span=12).mean()
             ema26 = pd.Series(price_col).ewm(span=26).mean()
             macd = ema12 - ema26
-            features['macd'] = macd.iloc[-1]
+            features['macd'] = float(macd.iloc[-1])
+
+        # Integracion con AdvancedIndicatorEngine (si esta conectado)
+        adv_bundle = self._calculate_advanced_indicators(df)
+        if adv_bundle:
+            features['advanced_available'] = True
+            features['composite_score'] = float(adv_bundle.get('composite_score', 0.0))
+            features['indicator_confidence'] = float(np.clip(adv_bundle.get('confidence', 0.0), 0.0, 1.0))
+            features['final_signal'] = str(adv_bundle.get('final_signal', 'NEUTRAL')).upper()
+            features['rsi'] = float(adv_bundle.get('rsi', features['rsi']))
+            features['macd'] = float(adv_bundle.get('macd', features['macd']))
+            features['advanced_signal_bundle'] = adv_bundle
 
         return pd.DataFrame([features])
+
+    def _calculate_advanced_indicators(self, price_data: pd.DataFrame) -> Dict[str, Any]:
+        """Calcular indicadores avanzados de TradingView-style (si disponible)."""
+        if self.advanced_indicator_engine is None:
+            return {}
+
+        try:
+            close = pd.Series(get_price_column(price_data)).astype(float)
+            open_ = pd.Series(price_data['open']).astype(float) if 'open' in price_data.columns else close.copy()
+            high = pd.Series(price_data['high']).astype(float) if 'high' in price_data.columns else close.copy()
+            low = pd.Series(price_data['low']).astype(float) if 'low' in price_data.columns else close.copy()
+            volume = pd.Series(price_data['volume']).astype(float) if 'volume' in price_data.columns else pd.Series(np.ones(len(close)))
+
+            bundle = self.advanced_indicator_engine.calculate_all(
+                close=close.values,
+                high=high.values,
+                low=low.values,
+                open_=open_.values,
+                volume=volume.values,
+            )
+            if not bundle:
+                return {}
+            return bundle
+        except Exception as e:
+            print(f"  ⚠ Advanced indicators error: {str(e)[:80]}")
+            return {}
+
+    @staticmethod
+    def _summarize_advanced_bundle(bundle: Dict[str, Any]) -> Dict[str, Any]:
+        """Resumen serializable de senales avanzadas para logs/dashboard."""
+        if not bundle:
+            return {}
+
+        rsi_data = bundle.get('rsi_data', {}) or {}
+        st_data = bundle.get('stochastic_data', {}) or {}
+        macd_data = bundle.get('macd_data', {}) or {}
+        bvb_data = bundle.get('bvb_data', {}) or {}
+        k_data = bundle.get('koncorde_data', {}) or {}
+        lp_data = bundle.get('liquidity_data', {}) or {}
+        br = bundle.get('signal_breakdown', {}) or {}
+
+        return {
+            'composite_score': float(bundle.get('composite_score', 0.0)),
+            'final_signal': str(bundle.get('final_signal', 'NEUTRAL')).upper(),
+            'confidence': float(np.clip(bundle.get('confidence', 0.0), 0.0, 1.0)),
+            'rsi': float(bundle.get('rsi', 50.0)),
+            'rsi_signal': str(rsi_data.get('rsi_signal', 'NEUTRAL')),
+            'rsi_divergence': str(rsi_data.get('rsi_divergence', 'NONE')),
+            'stoch_k': float(st_data.get('stoch_k', 50.0)),
+            'stoch_d': float(st_data.get('stoch_d', 50.0)),
+            'stoch_signal': str(st_data.get('stoch_signal', 'NEUTRAL')),
+            'stoch_cross': str(st_data.get('stoch_cross', 'NONE')),
+            'macd': float(bundle.get('macd', 0.0)),
+            'macd_signal': float(macd_data.get('macd_signal', 0.0)),
+            'macd_histogram': float(macd_data.get('macd_histogram', 0.0)),
+            'macd_cross': str(macd_data.get('macd_cross', 'NONE')),
+            'macd_momentum': str(macd_data.get('macd_momentum', 'NEUTRAL')),
+            'bvb_total': float(bundle.get('bvb_total', 0.0)),
+            'bvb_signal': str(bvb_data.get('bvb_signal', 'NEUTRAL')),
+            'k_signal': str(k_data.get('k_signal', 'NEUTRAL')),
+            'k_smart_money': str(k_data.get('k_smart_money', 'NEUTRAL')),
+            'k_verde': float(bundle.get('k_verde', 0.0)),
+            'k_marron': float(bundle.get('k_marron', 0.0)),
+            'k_azul': float(bundle.get('k_azul', 0.0)),
+            'lp_signal': str(bundle.get('lp_signal', 'NEUTRAL')),
+            'lp_breakout': str(lp_data.get('lp_breakout', 'NONE')),
+            'lp_near_support': bool(lp_data.get('lp_near_support', False)),
+            'lp_near_resistance': bool(lp_data.get('lp_near_resistance', False)),
+            'lp_distance_to_nearest': float(lp_data.get('lp_distance_to_nearest', 1.0)),
+            'signal_breakdown': {
+                name: {
+                    'raw_score': float((data or {}).get('raw_score', 0.0)),
+                    'weight': float((data or {}).get('weight', 0.0)),
+                    'weighted_contribution': float((data or {}).get('weighted_contribution', 0.0)),
+                }
+                for name, data in br.items()
+            },
+        }
 
     def _prepare_graph_data(self, market_data: Dict) -> Dict:
         n_assets = 10
@@ -1300,7 +1475,7 @@ class GodModeComplete:
         np.fill_diagonal(adjacency, 1.0)
         return {'adjacency': adjacency, 'features': features}
 
-    def _construct_market_state(self, temporal, vision, tabular, nlp, graph) -> MarketState:
+    def _construct_market_state(self, temporal, vision, tabular, nlp, graph, advanced: Optional[Dict[str, Any]] = None) -> MarketState:
         price_features = temporal.prediction[:10]
         if len(price_features) < 10:
             price_features = np.pad(price_features, (0, 10 - len(price_features)))
@@ -1308,7 +1483,14 @@ class GodModeComplete:
         tab_pred = float(tabular.prediction[0]) if len(tabular.prediction) > 0 else 0.0
         temp_pred = float(np.mean(temporal.prediction[-3:])) if len(temporal.prediction) > 0 else 0.0
         vis_pred = float(np.mean(vision.prediction)) if len(vision.prediction) > 0 else 0.0
-        technical = np.array([tab_pred, temp_pred, vis_pred], dtype=float)
+        adv = advanced or {}
+        adv_comp = float(adv.get('composite_score', 0.0))
+        adv_conf = float(np.clip(adv.get('confidence', 0.0), 0.0, 1.0))
+        adv_final = str(adv.get('final_signal', 'NEUTRAL')).upper()
+        adv_map = {'STRONG_BUY': 1.0, 'BUY': 0.5, 'NEUTRAL': 0.0, 'SELL': -0.5, 'STRONG_SELL': -1.0}
+        adv_signal = float(adv_map.get(adv_final, 0.0))
+
+        technical = np.array([tab_pred, temp_pred, vis_pred, adv_comp, adv_signal, adv_conf], dtype=float)
         sentiment = float(nlp.prediction[0])
         base_vol = float(tabular.metadata.get('volatility', np.std(temporal.prediction)))
         volatility = float(np.clip(abs(base_vol), 0.005, 0.20))

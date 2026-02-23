@@ -37,8 +37,18 @@ LOGS_DIR.mkdir(exist_ok=True)
 
 ACTION_COLOR = {"BUY": "#0f766e", "SELL": "#b91c1c", "HOLD": "#b45309", "NO_DATA": "#6b7280"}
 ACTION_MAP = {"BUY": 1.0, "SELL": -1.0, "HOLD": 0.0, "NO_DATA": 0.0}
-MODULE_COLS = ["temporal", "vision", "tabular", "nlp", "graph", "options_model", "overall_model"]
-STATUS_COLS = ["status_temporal", "status_vision", "status_tabular", "status_nlp", "status_graph", "status_sac", "status_timegan", "status_options"]
+MODULE_COLS = ["temporal", "vision", "tabular", "nlp", "graph", "advanced_model", "options_model", "overall_model"]
+STATUS_COLS = [
+    "status_temporal",
+    "status_vision",
+    "status_tabular",
+    "status_nlp",
+    "status_graph",
+    "status_sac",
+    "status_timegan",
+    "status_options",
+    "status_advanced_indicators",
+]
 
 
 def set_theme() -> None:
@@ -143,6 +153,7 @@ def reports_to_df(reports: List[Dict]) -> pd.DataFrame:
         for signal in report.get("signals", []) or []:
             model = signal.get("model_confidence", {}) or {}
             options = signal.get("options_analysis", {}) or {}
+            advanced = signal.get("advanced", {}) or {}
             m_status = signal.get("model_status", {}) or {}
             sig_ts = pd.to_datetime(signal.get("timestamp"), errors="coerce")
             if pd.isna(sig_ts):
@@ -168,8 +179,26 @@ def reports_to_df(reports: List[Dict]) -> pd.DataFrame:
                     "tabular": float(model.get("tabular", np.nan)),
                     "nlp": float(model.get("nlp", np.nan)),
                     "graph": float(model.get("graph", np.nan)),
+                    "advanced_model": float(model.get("advanced", np.nan)),
                     "options_model": float(model.get("options", np.nan)),
                     "overall_model": float(model.get("overall", np.nan)),
+                    "advanced_score": float(advanced.get("composite_score", np.nan)),
+                    "advanced_signal": str(advanced.get("final_signal", "NEUTRAL")).upper(),
+                    "advanced_conf": float(advanced.get("confidence", np.nan)),
+                    "adv_rsi": float(advanced.get("rsi", np.nan)),
+                    "adv_rsi_signal": str(advanced.get("rsi_signal", "NEUTRAL")),
+                    "adv_rsi_divergence": str(advanced.get("rsi_divergence", "NONE")),
+                    "adv_macd": float(advanced.get("macd", np.nan)),
+                    "adv_macd_hist": float(advanced.get("macd_histogram", np.nan)),
+                    "adv_macd_cross": str(advanced.get("macd_cross", "NONE")),
+                    "adv_bvb_total": float(advanced.get("bvb_total", np.nan)),
+                    "adv_bvb_signal": str(advanced.get("bvb_signal", "NEUTRAL")),
+                    "adv_k_signal": str(advanced.get("k_signal", "NEUTRAL")),
+                    "adv_k_smart_money": str(advanced.get("k_smart_money", "NEUTRAL")),
+                    "adv_lp_signal": str(advanced.get("lp_signal", "NEUTRAL")),
+                    "adv_lp_breakout": str(advanced.get("lp_breakout", "NONE")),
+                    "adv_lp_near_support": bool(advanced.get("lp_near_support", False)),
+                    "adv_lp_near_resistance": bool(advanced.get("lp_near_resistance", False)),
                     "options_bias": str(options.get("directional_bias", "N/A")),
                     "options_rec": str(options.get("recommendation", "N/A")),
                     "options_iv": float(options.get("avg_implied_volatility", 0.0)),
@@ -181,6 +210,7 @@ def reports_to_df(reports: List[Dict]) -> pd.DataFrame:
                     "status_sac": str(m_status.get("sac", "UNKNOWN")),
                     "status_timegan": str(m_status.get("timegan", "UNKNOWN")),
                     "status_options": str(m_status.get("options", "UNKNOWN")),
+                    "status_advanced_indicators": str(m_status.get("advanced_indicators", "UNKNOWN")),
                     "source_file": report.get("_file", ""),
                 }
             )
@@ -294,6 +324,9 @@ def build_universe_signals(selected_df: pd.DataFrame, tape_df: pd.DataFrame, uni
                     "action": "NO_DATA",
                     "price": np.nan,
                     "confidence": np.nan,
+                    "advanced_signal": "NO_DATA",
+                    "advanced_score": np.nan,
+                    "advanced_conf": np.nan,
                     "position_size": np.nan,
                     "risk_passed": False,
                     "options_bias": "N/A",
@@ -316,6 +349,9 @@ def build_universe_signals(selected_df: pd.DataFrame, tape_df: pd.DataFrame, uni
                 "action": str(item.get("action", "NO_DATA")).upper(),
                 "price": float(item.get("price", np.nan)),
                 "confidence": float(item.get("confidence", np.nan)),
+                "advanced_signal": str(item.get("advanced_signal", "NEUTRAL")).upper() if source == "report" else "N/A",
+                "advanced_score": float(item.get("advanced_score", np.nan)) if source == "report" else np.nan,
+                "advanced_conf": float(item.get("advanced_conf", np.nan)) if source == "report" else np.nan,
                 "position_size": float(item.get("position_size", np.nan)),
                 "risk_passed": bool(item.get("risk_passed", False)) if source == "report" else np.nan,
                 "options_bias": str(item.get("options_bias", "N/A")) if source == "report" else "N/A",
@@ -538,6 +574,8 @@ def show_signal_tab(universe_df: pd.DataFrame, all_df: pd.DataFrame) -> None:
     fmt = view.copy()
     fmt["price"] = fmt["price"].map(lambda x: f"${x:,.2f}" if pd.notna(x) else "N/A")
     fmt["confidence"] = fmt["confidence"].map(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "N/A")
+    fmt["advanced_score"] = fmt["advanced_score"].map(lambda x: f"{x:+.2f}" if pd.notna(x) else "N/A")
+    fmt["advanced_conf"] = fmt["advanced_conf"].map(lambda x: f"{x*100:.1f}%" if pd.notna(x) else "N/A")
     fmt["timestamp"] = pd.to_datetime(fmt["timestamp"], errors="coerce").dt.strftime("%Y-%m-%d %H:%M:%S")
     fmt["staleness_min"] = fmt["staleness_min"].map(lambda x: f"{x:.1f}" if pd.notna(x) else "N/A")
     st.dataframe(
@@ -547,6 +585,9 @@ def show_signal_tab(universe_df: pd.DataFrame, all_df: pd.DataFrame) -> None:
                 "action",
                 "price",
                 "confidence",
+                "advanced_signal",
+                "advanced_score",
+                "advanced_conf",
                 "position_size",
                 "risk_passed",
                 "options_bias",
@@ -591,6 +632,7 @@ def show_model_audit_tab(universe_df: pd.DataFrame, selected_df: pd.DataFrame, a
                 {"module": "sac", "status": latest_row.get("status_sac", "UNKNOWN")},
                 {"module": "timegan", "status": latest_row.get("status_timegan", "UNKNOWN")},
                 {"module": "options", "status": latest_row.get("status_options", "UNKNOWN")},
+                {"module": "advanced_indicators", "status": latest_row.get("status_advanced_indicators", "UNKNOWN")},
             ]
         )
         st.dataframe(connectivity, use_container_width=True, hide_index=True)
@@ -651,6 +693,31 @@ def show_model_audit_tab(universe_df: pd.DataFrame, selected_df: pd.DataFrame, a
         )
         fig.update_layout(height=700)
         st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("#### Advanced Indicators Snapshot")
+        adv_cols = [
+            "symbol",
+            "advanced_signal",
+            "advanced_score",
+            "advanced_conf",
+            "adv_rsi",
+            "adv_rsi_signal",
+            "adv_rsi_divergence",
+            "adv_macd",
+            "adv_macd_hist",
+            "adv_macd_cross",
+            "adv_bvb_total",
+            "adv_bvb_signal",
+            "adv_k_signal",
+            "adv_k_smart_money",
+            "adv_lp_signal",
+            "adv_lp_breakout",
+            "adv_lp_near_support",
+            "adv_lp_near_resistance",
+        ]
+        adv_view = selected_df[adv_cols].copy().set_index("symbol")
+        adv_view = adv_view.reindex(TOP_50_SYMBOLS)
+        st.dataframe(adv_view, use_container_width=True)
 
     # Drift de módulos
     st.markdown("#### Module Drift Over Time")

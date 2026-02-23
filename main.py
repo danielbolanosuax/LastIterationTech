@@ -345,6 +345,7 @@ def save_report_to_file(results: List[dict], portfolio: dict):
                     'tabular': float(r.get('result', {}).get('confidence_breakdown', {}).get('tabular', 0.0)),
                     'nlp': float(r.get('result', {}).get('confidence_breakdown', {}).get('nlp', 0.0)),
                     'graph': float(r.get('result', {}).get('confidence_breakdown', {}).get('graph', 0.0)),
+                    'advanced': float(r.get('result', {}).get('confidence_breakdown', {}).get('advanced', 0.0)),
                     'base_model': float(r.get('result', {}).get('confidence_breakdown', {}).get('base_model', 0.0)),
                     'options': float(r.get('result', {}).get('confidence_breakdown', {}).get('options', 0.0)),
                     'overall': float(r.get('result', {}).get('confidence_breakdown', {}).get('overall', r.get('confidence', 0.0)))
@@ -352,6 +353,38 @@ def save_report_to_file(results: List[dict], portfolio: dict):
                 'model_status': {
                     str(k): str(v)
                     for k, v in (r.get('result', {}).get('model_status', {}) or {}).items()
+                },
+                'advanced': {
+                    'composite_score': float(r.get('result', {}).get('advanced_signals', {}).get('composite_score', 0.0)),
+                    'final_signal': str(r.get('result', {}).get('advanced_signals', {}).get('final_signal', 'NEUTRAL')),
+                    'confidence': float(r.get('result', {}).get('advanced_signals', {}).get('confidence', 0.0)),
+                    'rsi': float(r.get('result', {}).get('advanced_signals', {}).get('rsi', 50.0)),
+                    'rsi_signal': str(r.get('result', {}).get('advanced_signals', {}).get('rsi_signal', 'NEUTRAL')),
+                    'rsi_divergence': str(r.get('result', {}).get('advanced_signals', {}).get('rsi_divergence', 'NONE')),
+                    'stoch_k': float(r.get('result', {}).get('advanced_signals', {}).get('stoch_k', 50.0)),
+                    'stoch_d': float(r.get('result', {}).get('advanced_signals', {}).get('stoch_d', 50.0)),
+                    'stoch_signal': str(r.get('result', {}).get('advanced_signals', {}).get('stoch_signal', 'NEUTRAL')),
+                    'stoch_cross': str(r.get('result', {}).get('advanced_signals', {}).get('stoch_cross', 'NONE')),
+                    'macd': float(r.get('result', {}).get('advanced_signals', {}).get('macd', 0.0)),
+                    'macd_signal': float(r.get('result', {}).get('advanced_signals', {}).get('macd_signal', 0.0)),
+                    'macd_histogram': float(r.get('result', {}).get('advanced_signals', {}).get('macd_histogram', 0.0)),
+                    'macd_cross': str(r.get('result', {}).get('advanced_signals', {}).get('macd_cross', 'NONE')),
+                    'macd_momentum': str(r.get('result', {}).get('advanced_signals', {}).get('macd_momentum', 'NEUTRAL')),
+                    'bvb_total': float(r.get('result', {}).get('advanced_signals', {}).get('bvb_total', 0.0)),
+                    'bvb_signal': str(r.get('result', {}).get('advanced_signals', {}).get('bvb_signal', 'NEUTRAL')),
+                    'k_signal': str(r.get('result', {}).get('advanced_signals', {}).get('k_signal', 'NEUTRAL')),
+                    'k_smart_money': str(r.get('result', {}).get('advanced_signals', {}).get('k_smart_money', 'NEUTRAL')),
+                    'k_verde': float(r.get('result', {}).get('advanced_signals', {}).get('k_verde', 0.0)),
+                    'k_marron': float(r.get('result', {}).get('advanced_signals', {}).get('k_marron', 0.0)),
+                    'k_azul': float(r.get('result', {}).get('advanced_signals', {}).get('k_azul', 0.0)),
+                    'lp_signal': str(r.get('result', {}).get('advanced_signals', {}).get('lp_signal', 'NEUTRAL')),
+                    'lp_breakout': str(r.get('result', {}).get('advanced_signals', {}).get('lp_breakout', 'NONE')),
+                    'lp_near_support': bool(r.get('result', {}).get('advanced_signals', {}).get('lp_near_support', False)),
+                    'lp_near_resistance': bool(r.get('result', {}).get('advanced_signals', {}).get('lp_near_resistance', False)),
+                    'lp_distance_to_nearest': float(r.get('result', {}).get('advanced_signals', {}).get('lp_distance_to_nearest', 1.0)),
+                    'signal_breakdown': (
+                        r.get('result', {}).get('advanced_signals', {}).get('signal_breakdown', {}) or {}
+                    ),
                 },
                 'options_analysis': {
                     'available': bool(r.get('options_analysis', {}).get('available', False)),
