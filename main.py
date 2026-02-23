@@ -231,6 +231,23 @@ def save_report_to_file(results: List[dict], portfolio: dict):
                 'position_size': float(r['signal'].position_size),
                 'stop_loss': float(r['signal'].stop_loss),
                 'take_profit': float(r['signal'].take_profit),
+                'reasoning': str(r['signal'].reasoning),
+                'timestamp': r['signal'].timestamp.isoformat() if hasattr(r['signal'].timestamp, 'isoformat') else str(r['signal'].timestamp),
+                'sentiment': float(r.get('result', {}).get('sentiment', 0.0)),
+                'risk_check': {
+                    'passed': bool(r.get('result', {}).get('risk_check', {}).get('passed', False)),
+                    'message': str(r.get('result', {}).get('risk_check', {}).get('message', 'N/A'))
+                },
+                'model_confidence': {
+                    'temporal': float(r.get('result', {}).get('confidence_breakdown', {}).get('temporal', 0.0)),
+                    'vision': float(r.get('result', {}).get('confidence_breakdown', {}).get('vision', 0.0)),
+                    'tabular': float(r.get('result', {}).get('confidence_breakdown', {}).get('tabular', 0.0)),
+                    'nlp': float(r.get('result', {}).get('confidence_breakdown', {}).get('nlp', 0.0)),
+                    'graph': float(r.get('result', {}).get('confidence_breakdown', {}).get('graph', 0.0)),
+                    'base_model': float(r.get('result', {}).get('confidence_breakdown', {}).get('base_model', 0.0)),
+                    'options': float(r.get('result', {}).get('confidence_breakdown', {}).get('options', 0.0)),
+                    'overall': float(r.get('result', {}).get('confidence_breakdown', {}).get('overall', r.get('confidence', 0.0)))
+                },
                 'options_analysis': {
                     'available': bool(r.get('options_analysis', {}).get('available', False)),
                     'directional_bias': r.get('options_analysis', {}).get('directional_bias', 'NEUTRAL'),

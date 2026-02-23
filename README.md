@@ -281,10 +281,3 @@ Este sistema es para propósitos educativos y de investigación. Trading conllev
 
 MIT License - Ver LICENSE file
 
-## 👨‍💻 Autor
-
-Created with ❤️ by AI
-
----
-
-**Made in 2026 | God Mode Trading v3.0**
