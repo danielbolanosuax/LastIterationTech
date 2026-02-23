@@ -4,7 +4,6 @@ God Mode Alert System
 Sistema de alertas automáticas con schedule
 """
 
-import schedule
 import time
 import smtplib
 from email.mime.text import MIMEText
@@ -12,6 +11,11 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import os
 from typing import List
+
+try:
+    import schedule
+except ImportError:
+    schedule = None
 
 from god_mode_complete import GodModeComplete, Config, TradeSignal
 
@@ -254,10 +258,30 @@ def start_alert_scheduler(symbols: List[str], interval_minutes: int = 60):
 
     # Programar checks
     def job():
-        alert_manager.check_and_alert(symbols)
+        try:
+            alert_manager.check_and_alert(symbols)
+        except Exception as e:
+            print(f"  ❌ Error en job de alertas: {str(e)[:100]}")
 
     # Primera ejecución inmediata
     job()
+
+    if interval_minutes <= 0:
+        raise ValueError("interval_minutes debe ser mayor a 0")
+
+    # Fallback sin dependencia externa de schedule
+    if schedule is None:
+        print("\n⚠ Paquete 'schedule' no disponible. Usando loop interno.")
+        print(f"⏰ Próximo check en {interval_minutes} minutos...")
+        print("   Presiona Ctrl+C para detener\n")
+
+        try:
+            while True:
+                time.sleep(interval_minutes * 60)
+                job()
+        except KeyboardInterrupt:
+            print("\n\n🛑 Scheduler detenido")
+        return
 
     # Programar ejecuciones periódicas
     schedule.every(interval_minutes).minutes.do(job)
@@ -268,7 +292,10 @@ def start_alert_scheduler(symbols: List[str], interval_minutes: int = 60):
     # Loop infinito
     try:
         while True:
-            schedule.run_pending()
+            try:
+                schedule.run_pending()
+            except Exception as e:
+                print(f"  ❌ Error del scheduler: {str(e)[:100]}")
             time.sleep(60)  # Check cada minuto
     except KeyboardInterrupt:
         print("\n\n🛑 Scheduler detenido")

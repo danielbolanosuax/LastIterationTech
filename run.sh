@@ -11,6 +11,9 @@ fi
 # Activar venv
 source venv/bin/activate
 
+# Forzar salida UTF-8 para evitar errores de encoding en consola
+export PYTHONIOENCODING=utf-8
+
 # Verificar argumentos
 if [ $# -eq 0 ]; then
     echo "================================================================================"
@@ -21,7 +24,7 @@ if [ $# -eq 0 ]; then
     echo ""
     echo "Opciones:"
     echo "  1, pipeline    - Ejecutar pipeline principal (una vez)"
-    echo "  2, loop        - Ejecutar pipeline en loop continuo"
+    echo "  2, loop        - Ejecutar pipeline 24/7 con auto-reinicio"
     echo "  3, quick       - Ejecutar quickstart demo"
     echo "  4, dashboard   - Lanzar dashboard web"
     echo "  5, alerts      - Activar sistema de alertas"
@@ -42,8 +45,8 @@ case $1 in
         ;;
 
     2|loop)
-        echo "🔄 Ejecutando pipeline en loop continuo (1 hora)..."
-        python main.py --symbols AAPL MSFT GOOGL TSLA NVDA --loop --interval 3600
+        echo "🔄 Ejecutando modo 24/7 con supervisor..."
+        python run_24_7.py --symbols AAPL MSFT GOOGL TSLA NVDA --interval 3600 --retry-delay 60 --restart-delay 15
         ;;
 
     3|quick|quickstart)

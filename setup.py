@@ -9,6 +9,17 @@ import sys
 import subprocess
 from pathlib import Path
 
+def configure_console_output():
+    """Evitar errores de encoding en consolas no UTF-8."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                pass
+
+configure_console_output()
+
 def print_header(text):
     print("\n" + "="*80)
     print(f"  {text}")

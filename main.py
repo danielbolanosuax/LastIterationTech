@@ -8,11 +8,29 @@ import os
 import sys
 import time
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List
 
 # Añadir directorio actual al path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def configure_console_output():
+    """Evitar caídas por encoding en consolas no UTF-8."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                pass
+
+
+configure_console_output()
+
+
+def get_action_emoji(action: str) -> str:
+    """Obtener emoji de accion sin lanzar errores por acciones desconocidas."""
+    return {'BUY': '🟢', 'SELL': '🔴', 'HOLD': '🟡'}.get(action, '⚪')
 
 def print_banner():
     """Banner del sistema"""
@@ -94,7 +112,7 @@ def analyze_watchlist(god_mode, symbols: List[str], execute_trades: bool = False
             confidence = result['confidence_breakdown']['overall']
 
             # Emoji según acción
-            action_emoji = {'BUY': '🟢', 'SELL': '🔴', 'HOLD': '🟡'}[signal.action]
+            action_emoji = get_action_emoji(signal.action)
 
             print(f"       {action_emoji} {signal.action} @ ${result['current_price']:.2f}")
             print(f"       Confianza: {confidence:.1%}")
@@ -137,7 +155,7 @@ def generate_report(results: List[dict], god_mode):
 
     for r in results:
         signal = r['signal']
-        action_emoji = {'BUY': '🟢', 'SELL': '🔴', 'HOLD': '🟡'}[r['action']]
+        action_emoji = get_action_emoji(r['action'])
 
         print(f"{r['symbol']:<10} {action_emoji} {r['action']:<6} "
               f"${r['price']:<10.2f} {r['confidence']:<11.1%} "
@@ -203,7 +221,7 @@ def save_report_to_file(results: List[dict], portfolio: dict):
         }
     }
 
-    with open(filename, 'w') as f:
+    with open(filename, 'w', encoding='utf-8') as f:
         json.dump(report_data, f, indent=2)
 
     print(f"\n📝 Reporte guardado: {filename}")
@@ -267,7 +285,22 @@ def main():
         help='Intervalo en segundos para loop (default: 3600 = 1 hora)'
     )
 
+    parser.add_argument(
+        '--retry-delay',
+        type=int,
+        default=60,
+        help='Segundos de espera antes de reintentar tras un error en modo loop'
+    )
+
     args = parser.parse_args()
+
+    if args.interval <= 0:
+        print("❌ --interval debe ser mayor a 0")
+        sys.exit(1)
+
+    if args.retry_delay <= 0:
+        print("❌ --retry-delay debe ser mayor a 0")
+        sys.exit(1)
 
     # Banner
     print_banner()
@@ -299,9 +332,11 @@ def main():
     if args.loop:
         print(f"\n🔄 MODO LOOP ACTIVADO")
         print(f"   Intervalo: {args.interval} segundos ({args.interval/60:.0f} minutos)")
+        print(f"   Reintento ante error: {args.retry_delay} segundos")
         print(f"   Presiona Ctrl+C para detener\n")
 
         cycle_count = 0
+        consecutive_failures = 0
 
         try:
             while True:
@@ -311,7 +346,17 @@ def main():
                 print(f"CICLO #{cycle_count} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                 print(f"{'='*80}")
 
-                run_cycle()
+                try:
+                    run_cycle()
+                    consecutive_failures = 0
+                except Exception as e:
+                    consecutive_failures += 1
+                    print(f"\n❌ Error en ciclo #{cycle_count}: {str(e)[:200]}")
+                    print(f"   Fallos consecutivos: {consecutive_failures}")
+                    retry_at = datetime.now() + timedelta(seconds=args.retry_delay)
+                    print(f"   Reintentando a las {retry_at.strftime('%H:%M:%S')}\n")
+                    time.sleep(args.retry_delay)
+                    continue
 
                 print(f"\n⏰ Próximo ciclo en {args.interval/60:.0f} minutos...")
                 print(f"   Esperando hasta {(datetime.now() + timedelta(seconds=args.interval)).strftime('%H:%M:%S')}\n")
@@ -324,7 +369,11 @@ def main():
 
     else:
         # Ejecución única
-        run_cycle()
+        try:
+            run_cycle()
+        except Exception as e:
+            print(f"\n❌ Error en ejecución única: {str(e)[:200]}")
+            sys.exit(1)
 
     # Final
     print("\n" + "="*80)

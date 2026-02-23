@@ -9,8 +9,22 @@ import requests
 import time
 import json
 import os
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+
+
+def configure_console_output():
+    """Evitar errores de encoding al imprimir unicode en Windows."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                pass
+
+
+configure_console_output()
 
 # ============================================================================
 # CONFIGURACIÓN GLOBAL
@@ -62,43 +76,70 @@ class MarketDataAPI:
         self.av_base_url = "https://www.alphavantage.co/query"
         self.cache_dir = Config.DATA_DIR / "cache"
         self.cache_dir.mkdir(exist_ok=True)
+        self.stock_cache_ttl_seconds = 3600
+        self.news_cache_ttl_seconds = 1800
+        self.yahoo_enabled = True
+
+    def _read_cached_stock_data(self, cache_file: Path) -> Optional[pd.DataFrame]:
+        """Leer cache de mercado desde CSV (sin dependencias extra)."""
+        try:
+            df = pd.read_csv(cache_file, parse_dates=['datetime'])
+            if df.empty or 'close' not in df.columns:
+                return None
+            return df
+        except Exception:
+            return None
+
+    def _write_cached_stock_data(self, cache_file: Path, data: pd.DataFrame):
+        """Persistir cache de mercado de forma segura."""
+        try:
+            data.to_csv(cache_file, index=False)
+        except Exception as e:
+            print(f"  ⚠ No se pudo guardar cache: {str(e)[:50]}")
 
     def get_stock_data(self, symbol: str, period: str = "3mo", use_cache: bool = True) -> pd.DataFrame:
         """Obtener datos con sistema de cache"""
-        cache_file = self.cache_dir / f"{symbol}_{period}.parquet"
+        cache_file = self.cache_dir / f"{symbol}_{period}.csv"
 
         # Verificar cache
         if use_cache and cache_file.exists():
             cache_age = time.time() - cache_file.stat().st_mtime
-            if cache_age < 3600:  # Cache válido por 1 hora
-                print(f"  ✓ Usando datos en cache ({cache_age/60:.0f}m antiguos)")
-                return pd.read_parquet(cache_file)
+            if cache_age < self.stock_cache_ttl_seconds:
+                cached_df = self._read_cached_stock_data(cache_file)
+                if cached_df is not None:
+                    print(f"  ✓ Usando datos en cache ({cache_age/60:.0f}m antiguos)")
+                    return cached_df
 
         print(f"\n📡 Descargando datos de {symbol}...")
 
         # Intentar Yahoo Finance
-        try:
-            import yfinance as yf
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(period=period)
+        if self.yahoo_enabled:
+            try:
+                import yfinance as yf
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period=period)
 
-            if not df.empty:
-                df.columns = [col.lower() for col in df.columns]
-                df = df.reset_index()
-                df.rename(columns={'date': 'datetime'}, inplace=True)
+                if not df.empty:
+                    df.columns = [col.lower() for col in df.columns]
+                    df = df.reset_index()
+                    df.rename(columns={'date': 'datetime'}, inplace=True)
 
-                # Guardar en cache
-                df.to_parquet(cache_file)
-                print(f"  ✓ Yahoo Finance: {len(df)} registros")
-                return df
-        except Exception as e:
-            print(f"  ⚠ Yahoo Finance: {str(e)[:50]}")
+                    # Guardar en cache
+                    self._write_cached_stock_data(cache_file, df)
+                    print(f"  ✓ Yahoo Finance: {len(df)} registros")
+                    return df
+            except Exception as e:
+                error_text = str(e)
+                print(f"  ⚠ Yahoo Finance: {error_text[:50]}")
+                if "curl: (77)" in error_text or "certificate" in error_text.lower():
+                    self.yahoo_enabled = False
+                    print("  ⚠ Yahoo Finance deshabilitado por error de certificados")
 
         # Fallback a Alpha Vantage
         try:
             df = self._get_alpha_vantage(symbol)
             if df is not None and len(df) > 0:
-                df.to_parquet(cache_file)
+                self._write_cached_stock_data(cache_file, df)
                 print(f"  ✓ Alpha Vantage: {len(df)} registros")
                 return df
         except Exception as e:
@@ -107,7 +148,7 @@ class MarketDataAPI:
         # Datos sintéticos como último recurso
         print(f"  ⚠ Usando datos sintéticos")
         df = self._generate_synthetic_data(symbol)
-        df.to_parquet(cache_file)
+        self._write_cached_stock_data(cache_file, df)
         return df
 
     def _get_alpha_vantage(self, symbol: str) -> pd.DataFrame:
@@ -173,9 +214,14 @@ class MarketDataAPI:
 
         if use_cache and cache_file.exists():
             cache_age = time.time() - cache_file.stat().st_mtime
-            if cache_age < 1800:  # 30 minutos
-                with open(cache_file, 'r') as f:
-                    return json.load(f)
+            if cache_age < self.news_cache_ttl_seconds:
+                try:
+                    with open(cache_file, 'r', encoding='utf-8') as f:
+                        cached_news = json.load(f)
+                    if isinstance(cached_news, list):
+                        return cached_news
+                except Exception:
+                    pass
 
         try:
             params = {
@@ -196,7 +242,7 @@ class MarketDataAPI:
                     news.append(f"{title}. {summary}"[:200])
 
                 if news:
-                    with open(cache_file, 'w') as f:
+                    with open(cache_file, 'w', encoding='utf-8') as f:
                         json.dump(news, f)
                     return news
         except:
@@ -215,6 +261,9 @@ class MarketDataAPI:
 
     def get_realtime_quote(self, symbol: str) -> Dict:
         """Quote en tiempo real"""
+        if not self.yahoo_enabled:
+            return {'symbol': symbol, 'price': 0, 'volume': 0}
+
         try:
             import yfinance as yf
             ticker = yf.Ticker(symbol)
@@ -228,7 +277,10 @@ class MarketDataAPI:
                 'pe_ratio': info.get('trailingPE', 0),
                 'beta': info.get('beta', 1.0)
             }
-        except:
+        except Exception as e:
+            error_text = str(e)
+            if "curl: (77)" in error_text or "certificate" in error_text.lower():
+                self.yahoo_enabled = False
             return {'symbol': symbol, 'price': 0, 'volume': 0}
 
 # ============================================================================
@@ -450,8 +502,12 @@ class PaperTradingEngine:
 
             if signal.symbol in self.portfolio['positions']:
                 pos = self.portfolio['positions'][signal.symbol]
-                pos['quantity'] += signal.position_size
-                pos['avg_price'] = (pos['avg_price'] * pos['quantity'] + signal.price * signal.position_size) / (pos['quantity'] + signal.position_size)
+                old_quantity = pos['quantity']
+                new_quantity = old_quantity + signal.position_size
+                pos['avg_price'] = (
+                    (pos['avg_price'] * old_quantity) + (signal.price * signal.position_size)
+                ) / new_quantity
+                pos['quantity'] = new_quantity
             else:
                 self.portfolio['positions'][signal.symbol] = {
                     'quantity': signal.position_size,
@@ -472,7 +528,7 @@ class PaperTradingEngine:
             self.portfolio['cash'] += signal.position_size * signal.price
             pos['quantity'] -= signal.position_size
 
-            if pos['quantity'] == 0:
+            if pos['quantity'] <= 1e-10:
                 del self.portfolio['positions'][signal.symbol]
 
         # Registrar trade
@@ -558,7 +614,7 @@ class GodModeComplete:
         class MockModule:
             def predict(self, data):
                 return ModelOutput(np.random.randn(10), 0.75, {}, 'mock')
-            def analyze(self, data):
+            def analyze(self, *args, **kwargs):
                 return ModelOutput(np.random.randn(10), 0.75, {'detected_patterns': ['mock']}, 'mock')
             def forward(self, *args):
                 return np.random.randn(10, 20)
@@ -599,7 +655,8 @@ class GodModeComplete:
         news_data = self.market_api.get_news_sentiment(symbol)
         quote = self.market_api.get_realtime_quote(symbol)
 
-        latest_price = quote.get('price', price_data['close'].iloc[-1])
+        quote_price = quote.get('price')
+        latest_price = quote_price if quote_price and quote_price > 0 else price_data['close'].iloc[-1]
         price_change = ((latest_price / price_data['close'].iloc[0]) - 1) * 100
 
         print(f"\n📊 Información:")
@@ -841,7 +898,7 @@ class GodModeComplete:
     def _save_signal(self, signal: TradeSignal):
         """Guardar señal en archivo"""
         signals_file = Config.LOGS_DIR / "signals.jsonl"
-        with open(signals_file, 'a') as f:
+        with open(signals_file, 'a', encoding='utf-8') as f:
             f.write(json.dumps(signal.to_dict(), default=str) + '\n')
 
     def backtest(self, symbol: str, start_date: str = None, end_date: str = None) -> Dict:
@@ -857,6 +914,12 @@ class GodModeComplete:
             price_data = price_data[price_data['datetime'] >= start_date]
         if end_date:
             price_data = price_data[price_data['datetime'] <= end_date]
+
+        if price_data.empty:
+            raise ValueError("No hay datos disponibles para el rango seleccionado")
+
+        if len(price_data) < 60:
+            raise ValueError("Datos insuficientes para backtest (mínimo recomendado: 60 filas)")
 
         print(f"  Período: {price_data['datetime'].iloc[0]} a {price_data['datetime'].iloc[-1]}")
         print(f"  Datos: {len(price_data)} días\n")
@@ -1004,6 +1067,9 @@ class GodModeComplete:
                 continue
 
         df = pd.DataFrame(results)
+        if df.empty:
+            print("\n⚠ No se generaron resultados válidos")
+            return df
         df = df.sort_values('Score', ascending=False)
 
         print(f"\n{'='*80}")
